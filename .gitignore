@@ -1,0 +1,33 @@
+# 秘匿設定ファイル
+secret_config.py
+instructions.txt
+
+# Python キャッシュファイル
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 仮想環境
+venv/
+env/
+.venv/
+
+# ログファイル
+*.log
+
+# データベースファイル
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE設定
+.vscode/
+.idea/
+
+# OS生成ファイル
+.DS_Store
+Thumbs.db
+
+# 一時ファイル
+*.tmp
+*.temp

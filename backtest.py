@@ -243,7 +243,7 @@ class Backtest:
 
         # ポジション状態（一元管理）
         self.cash = initial_cash
-        self.side = "FLAT"  # "FLAT" or "LONG"
+        self.side = "FLAT"  # "FLAT" or "LONG" or "SHORT"
         self.entry_price = None
         self.size = 0
 
@@ -343,71 +343,144 @@ class Backtest:
             trade_executed = False
             pnl = 0
 
-            # BUYシグナル（FLAT状態でのみ実行）
-            if signal == "BUY" and self.side == "FLAT":
-                # 資金チェック
-                cost = current_close * self.position_size
-                if cost <= self.cash:
-                    # 買い注文実行
+            # BUYシグナル解釈
+            if signal == "BUY":
+                # FLAT状態 → ロングエントリー
+                if self.side == "FLAT":
+                    # 資金チェック
+                    cost = current_close * self.position_size
+                    if cost <= self.cash:
+                        # 買い注文実行
+                        self.cash -= cost
+                        self.side = "LONG"
+                        self.entry_price = current_close
+                        self.size = self.position_size
+                        trade_executed = True
+
+                        # 取引履歴に記録
+                        trade = {
+                            'date': date.strftime('%Y-%m-%d'),
+                            'action': 'BUY',
+                            'price': current_close,
+                            'quantity': self.position_size,
+                            'pnl': 0,
+                            'position_type': 'LONG_ENTRY'
+                        }
+                        self.trades.append(trade)
+
+                # SHORT状態 → ショート解消
+                elif self.side == "SHORT":
+                    # 買い戻し注文実行
+                    cost = current_close * self.size
+                    pnl = round((self.entry_price - current_close) * self.size)
                     self.cash -= cost
-                    self.side = "LONG"
-                    self.entry_price = current_close
-                    self.size = self.position_size
-                    trade_executed = True
+
+                    # 勝敗判定
+                    if pnl > 0:
+                        self.wins += 1
 
                     # 取引履歴に記録
                     trade = {
                         'date': date.strftime('%Y-%m-%d'),
                         'action': 'BUY',
                         'price': current_close,
-                        'quantity': self.position_size,
-                        'pnl': 0
+                        'quantity': self.size,
+                        'pnl': pnl,
+                        'reason': reason,
+                        'position_type': 'SHORT_EXIT'
                     }
                     self.trades.append(trade)
 
-            # SELLシグナル（LONG状態でのみ実行）
-            elif signal == "SELL" and self.side == "LONG":
-                # 売り注文実行
-                sell_quantity = self.size  # 現在の保有数量を保存
-                revenue = current_close * sell_quantity
-                pnl = round((current_close - self.entry_price) * sell_quantity)
+                    # クローズした取引を記録
+                    closed_trade = {
+                        'entry_price': self.entry_price,
+                        'exit_price': current_close,
+                        'pnl': pnl,
+                        'reason': reason,
+                        'position_type': 'SHORT'
+                    }
+                    self.closed_trades.append(closed_trade)
 
-                self.cash += revenue
+                    # ポジション状態をリセット
+                    self.side = "FLAT"
+                    self.entry_price = None
+                    self.size = 0
+                    trade_executed = True
 
-                # 勝敗判定
-                if pnl > 0:
-                    self.wins += 1
+            # SELLシグナル解釈
+            elif signal == "SELL":
+                # FLAT状態 → ショートエントリー
+                if self.side == "FLAT":
+                    # 資金チェック（ショートは証拠金が必要）
+                    margin_required = current_close * self.position_size * 0.3  # 30%証拠金
+                    if margin_required <= self.cash:
+                        # 売り注文実行
+                        self.cash += current_close * self.position_size  # 売却代金を受け取る
+                        self.side = "SHORT"
+                        self.entry_price = current_close
+                        self.size = self.position_size
+                        trade_executed = True
 
-                # 取引履歴に記録
-                trade = {
-                    'date': date.strftime('%Y-%m-%d'),
-                    'action': 'SELL',
-                    'price': current_close,
-                    'quantity': sell_quantity,
-                    'pnl': pnl,
-                    'reason': reason
-                }
-                self.trades.append(trade)
+                        # 取引履歴に記録
+                        trade = {
+                            'date': date.strftime('%Y-%m-%d'),
+                            'action': 'SELL',
+                            'price': current_close,
+                            'quantity': self.position_size,
+                            'pnl': 0,
+                            'position_type': 'SHORT_ENTRY'
+                        }
+                        self.trades.append(trade)
 
-                # クローズした取引を記録
-                closed_trade = {
-                    'entry_price': self.entry_price,
-                    'exit_price': current_close,
-                    'pnl': pnl,
-                    'reason': reason
-                }
-                self.closed_trades.append(closed_trade)
+                # LONG状態 → ロング解消
+                elif self.side == "LONG":
+                    # 売り注文実行
+                    sell_quantity = self.size  # 現在の保有数量を保存
+                    revenue = current_close * sell_quantity
+                    pnl = round((current_close - self.entry_price) * sell_quantity)
 
-                # ポジション状態をリセット
-                self.side = "FLAT"
-                self.entry_price = None
-                self.size = 0
-                trade_executed = True
+                    self.cash += revenue
+
+                    # 勝敗判定
+                    if pnl > 0:
+                        self.wins += 1
+
+                    # 取引履歴に記録
+                    trade = {
+                        'date': date.strftime('%Y-%m-%d'),
+                        'action': 'SELL',
+                        'price': current_close,
+                        'quantity': sell_quantity,
+                        'pnl': pnl,
+                        'reason': reason,
+                        'position_type': 'LONG_EXIT'
+                    }
+                    self.trades.append(trade)
+
+                    # クローズした取引を記録
+                    closed_trade = {
+                        'entry_price': self.entry_price,
+                        'exit_price': current_close,
+                        'pnl': pnl,
+                        'reason': reason,
+                        'position_type': 'LONG'
+                    }
+                    self.closed_trades.append(closed_trade)
+
+                    # ポジション状態をリセット
+                    self.side = "FLAT"
+                    self.entry_price = None
+                    self.size = 0
+                    trade_executed = True
 
             # 累計資産を計算
             total_equity = self.cash
             if self.side == "LONG":
                 total_equity += current_close * self.size
+            elif self.side == "SHORT":
+                # ショートポジションの評価損益を加算
+                short_pnl = (self.entry_price - current_close) * self.size
+                total_equity += short_pnl
 
             # 資産曲線に記録
             self.equity_list.append(round(total_equity))
@@ -416,6 +489,8 @@ class Backtest:
             unrealized_pnl = 0
             if self.side == "LONG":
                 unrealized_pnl = round((current_close - self.entry_price) * self.size)
+            elif self.side == "SHORT":
+                unrealized_pnl = round((self.entry_price - current_close) * self.size)
 
             # ログ出力
             log_size = sell_quantity if signal == "SELL" and trade_executed else self.size
@@ -450,7 +525,8 @@ class Backtest:
                 'price': last_price,
                 'quantity': self.size,
                 'pnl': pnl,
-                'reason': '清算'
+                'reason': '清算',
+                'position_type': 'LONG_EXIT'
             }
             self.trades.append(trade)
 
@@ -459,7 +535,8 @@ class Backtest:
                 'entry_price': self.entry_price,
                 'exit_price': last_price,
                 'pnl': pnl,
-                'reason': '清算'
+                'reason': '清算',
+                'position_type': 'LONG'
             }
             self.closed_trades.append(closed_trade)
 
@@ -472,6 +549,60 @@ class Backtest:
                 last_date,
                 round(last_price),
                 "SELL",
+                self.size,
+                pnl,
+                round(total_equity),
+                "清算"
+            )
+
+            # ポジション状態をリセット
+            self.side = "FLAT"
+            self.entry_price = None
+            self.size = 0
+
+        elif self.side == "SHORT":
+            last_date = data.index[-1].strftime('%Y-%m-%d')
+            last_price = data.iloc[-1]['close']
+
+            cost = last_price * self.size
+            pnl = round((self.entry_price - last_price) * self.size)
+            self.cash -= cost
+
+            # 勝敗判定
+            if pnl > 0:
+                self.wins += 1
+
+            # 取引履歴に記録
+            trade = {
+                'date': last_date,
+                'action': 'BUY',
+                'price': last_price,
+                'quantity': self.size,
+                'pnl': pnl,
+                'reason': '清算',
+                'position_type': 'SHORT_EXIT'
+            }
+            self.trades.append(trade)
+
+            # クローズした取引を記録
+            closed_trade = {
+                'entry_price': self.entry_price,
+                'exit_price': last_price,
+                'pnl': pnl,
+                'reason': '清算',
+                'position_type': 'SHORT'
+            }
+            self.closed_trades.append(closed_trade)
+
+            # 最終資産を計算
+            total_equity = self.cash
+            self.equity_list.append(round(total_equity))
+
+            # 清算ログを出力
+            self._output_daily_log(
+                last_date,
+                round(last_price),
+                "BUY",
                 self.size,
                 pnl,
                 round(total_equity),
@@ -505,16 +636,36 @@ class Backtest:
             base_output = f"{date} 終値={close_price}"
 
             if signal == "BUY":
-                # BUY： "BUY 数量=NNN 損益=0 累計資産=XXXXX"
-                f.write(f"{base_output} BUY 数量={size} 損益=0 累計資産={total_equity}\n")
+                # BUYシグナル：ロング建て or ショート解消
+                if self.side == "LONG":
+                    # ロング建て
+                    f.write(f"{base_output} BUY 数量={size} ロング建て 累計資産={total_equity}\n")
+                elif self.side == "FLAT":
+                    # ショート解消
+                    f.write(f"{base_output} BUY 数量={size} ショート決済 損益={pnl:+} 累計資産={total_equity}\n")
+                else:
+                    # その他のケース
+                    f.write(f"{base_output} BUY 数量={size} 損益=0 累計資産={total_equity}\n")
+
             elif signal == "SELL":
-                # SELL："SELL 数量=NNN 損益=±PPP 累計資産=XXXXX 理由=reason文字列"
-                f.write(f"{base_output} SELL 数量={size} 損益={pnl:+} 累計資産={total_equity} 理由={reason}\n")
+                # SELLシグナル：ショート建て or ロング解消
+                if self.side == "SHORT":
+                    # ショート建て
+                    f.write(f"{base_output} SELL 数量={size} ショート建て 累計資産={total_equity}\n")
+                elif self.side == "FLAT":
+                    # ロング解消
+                    f.write(f"{base_output} SELL 数量={size} ロング決済 損益={pnl:+} 累計資産={total_equity} 理由={reason}\n")
+                else:
+                    # その他のケース
+                    f.write(f"{base_output} SELL 数量={size} 損益={pnl:+} 累計資産={total_equity} 理由={reason}\n")
             else:
                 # 非取引日
                 if self.side == "LONG":
                     # side=="LONG" → "HOLD ロングNNN株保持中 評価損益=±PPP 累計資産=XXXXX"
                     f.write(f"{base_output} HOLD ロング{size}株保持中 評価損益={pnl:+} 累計資産={total_equity}\n")
+                elif self.side == "SHORT":
+                    # side=="SHORT" → "HOLD ショートNNN株保持中 評価損益=±PPP 累計資産=XXXXX"
+                    f.write(f"{base_output} HOLD ショート{size}株保持中 評価損益={pnl:+} 累計資産={total_equity}\n")
                 else:
                     # side=="FLAT" → "FLAT ポジションなし 累計資産=XXXXX"
                     f.write(f"{base_output} FLAT ポジションなし 累計資産={total_equity}\n")
@@ -530,15 +681,25 @@ class Backtest:
         win_rate = (self.wins / total_trades * 100) if total_trades > 0 else 0.0
         final_cash = round(self.cash)
 
+        # ポジションタイプ別の集計
+        long_trades = [t for t in self.closed_trades if t.get('position_type') == 'LONG']
+        short_trades = [t for t in self.closed_trades if t.get('position_type') == 'SHORT']
+        long_pnl = sum(t['pnl'] for t in long_trades)
+        short_pnl = sum(t['pnl'] for t in short_trades)
+
         with open('performance.txt', 'a', encoding='utf-8') as f:
             f.write(f"\n=== バックテスト結果 ===\n")
             f.write(f"戦略: {strategy_name}\n")
             f.write(f"銘柄: {symbol}\n")
             f.write(f"取引回数: {total_trades}\n")
+            f.write(f"ロング取引: {len(long_trades)}\n")
+            f.write(f"ショート取引: {len(short_trades)}\n")
             f.write(f"勝ちトレード: {self.wins}\n")
             f.write(f"負けトレード: {total_trades - self.wins}\n")
             f.write(f"勝率: {win_rate:.1f}%\n")
             f.write(f"総損益: {total_pnl:+}\n")
+            f.write(f"ロング損益: {long_pnl:+}\n")
+            f.write(f"ショート損益: {short_pnl:+}\n")
             f.write(f"最終資金: {final_cash}\n")
             f.write(f"最大ドローダウン: -{max_dd:.1f}%\n")
 
@@ -551,10 +712,14 @@ class Backtest:
 
         print("\n=== バックテスト結果 ===")
         print(f"取引回数: {total_trades}")
+        print(f"ロング取引: {len(long_trades)}")
+        print(f"ショート取引: {len(short_trades)}")
         print(f"勝ちトレード: {self.wins}")
         print(f"負けトレード: {total_trades - self.wins}")
         print(f"勝率: {win_rate:.1f}%")
         print(f"総損益: {total_pnl:+}")
+        print(f"ロング損益: {long_pnl:+}")
+        print(f"ショート損益: {short_pnl:+}")
         print(f"最終資金: {final_cash}")
         print(f"最大ドローダウン: -{max_dd:.1f}%")
 

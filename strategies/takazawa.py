@@ -52,10 +52,32 @@ class Strategy:
         rci_signal = self._calculate_rci_signal(data, current_idx)
 
         # シグナルを統合（最も柔軟な条件）
-        if bb_signal == 'BUY' or rci_signal == 'BUY':
-            return {'signal': 'BUY', 'reason': f'BB:{bb_signal}+RCI:{rci_signal}'}
-        elif bb_signal == 'SELL' or rci_signal == 'SELL':
-            return {'signal': 'SELL', 'reason': f'BB:{bb_signal}+RCI:{rci_signal}'}
+        # ポジション状態に基づいてシグナル解釈
+        position = ctx.get("position", "FLAT")
+
+        if position == "FLAT":
+            # FLAT状態：BUY→ロングエントリー、SELL→ショートエントリー
+            if bb_signal == 'BUY' or rci_signal == 'BUY':
+                return {'signal': 'BUY', 'reason': f'BB:{bb_signal}+RCI:{rci_signal}'}
+            elif bb_signal == 'SELL' or rci_signal == 'SELL':
+                return {'signal': 'SELL', 'reason': f'BB:{bb_signal}+RCI:{rci_signal}'}
+            else:
+                return {'signal': 'HOLD', 'reason': 'シグナルなし'}
+
+        elif position == "LONG":
+            # LONG状態：SELL→ロング解消
+            if bb_signal == 'SELL' or rci_signal == 'SELL':
+                return {'signal': 'SELL', 'reason': f'BB:{bb_signal}+RCI:{rci_signal}'}
+            else:
+                return {'signal': 'HOLD', 'reason': 'シグナルなし'}
+
+        elif position == "SHORT":
+            # SHORT状態：BUY→ショート解消
+            if bb_signal == 'BUY' or rci_signal == 'BUY':
+                return {'signal': 'BUY', 'reason': f'BB:{bb_signal}+RCI:{rci_signal}'}
+            else:
+                return {'signal': 'HOLD', 'reason': 'シグナルなし'}
+
         else:
             return {'signal': 'HOLD', 'reason': 'シグナルなし'}
 

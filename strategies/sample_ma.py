@@ -111,6 +111,10 @@ class Strategy:
         elif position == "LONG":
             return self._evaluate_long_position(current_date, current_close, indicators, ctx, entry_price)
 
+        # SHORT状態（保有中）の場合
+        elif position == "SHORT":
+            return self._evaluate_short_position(current_date, current_close, indicators, ctx, entry_price)
+
         # その他の状態（想定外）
         return {'signal': 'HOLD', 'reason': 'no_signal'}
 
@@ -360,6 +364,75 @@ class Strategy:
             ma_slope == "DOWN"):
             self.last_sell_date = current_date
             return {'signal': 'SELL', 'reason': 'granville_sell_8'}
+
+        return {'signal': 'HOLD', 'reason': 'no_signal'}
+
+    def _evaluate_short_position(self, current_date: pd.Timestamp, current_close: float,
+                                indicators: Dict, ctx: dict, entry_price: float) -> dict:
+        """
+        SHORT状態でのシグナル評価
+
+        Args:
+            current_date: 現在の日付
+            current_close: 現在の終値
+            indicators: 指標値
+            ctx: コンテキスト情報
+            entry_price: エントリー価格
+
+        Returns:
+            dict: シグナル
+        """
+        # 損切り判定（最優先） - ショートの場合は価格上昇で損失
+        if current_close >= entry_price * (1 + self.stop_loss_pct):
+            self.last_sell_date = current_date
+            return {'signal': 'BUY', 'reason': 'stop_loss'}
+
+        # 最低保有日数チェック
+        if self.entry_date is not None:
+            days_in_trade = (current_date - self.entry_date).days
+            if days_in_trade < self.min_days_in_trade:
+                return {'signal': 'HOLD', 'reason': 'min_days_protection'}
+
+        baseline_ema_today = indicators['baseline_ema_today']
+        baseline_ema_yesterday = indicators['baseline_ema_yesterday']
+        ma_slope = indicators['ma_slope']
+        prev_close = indicators['prev_close']
+        touch_yesterday = indicators['touch_yesterday']
+
+        # ショート解消シグナル（グランビル買いシグナルを流用）
+        # G1: 下から上への明確ブレイク
+        if (baseline_ema_yesterday is not None and
+            prev_close <= baseline_ema_yesterday and
+            current_close > baseline_ema_today and
+            ma_slope == "UP"):
+            self.last_sell_date = current_date
+            return {'signal': 'BUY', 'reason': 'granville_buy_1'}
+
+        # G2: MA付近での反発（押し目買い）
+        if (baseline_ema_yesterday is not None and
+            prev_close >= baseline_ema_yesterday and
+            touch_yesterday and
+            current_close > prev_close and
+            ma_slope == "UP"):
+            self.last_sell_date = current_date
+            return {'signal': 'BUY', 'reason': 'granville_buy_2'}
+
+        # G3: MA上方維持中の反発強化
+        if (baseline_ema_yesterday is not None and
+            prev_close > baseline_ema_yesterday and
+            current_close > baseline_ema_today and
+            current_close > prev_close and
+            ma_slope == "UP"):
+            self.last_sell_date = current_date
+            return {'signal': 'BUY', 'reason': 'granville_buy_3'}
+
+        # G4: 一時割れ後の早期回復
+        if (baseline_ema_yesterday is not None and
+            prev_close < baseline_ema_yesterday and
+            current_close >= baseline_ema_today and
+            ma_slope == "UP"):
+            self.last_sell_date = current_date
+            return {'signal': 'BUY', 'reason': 'granville_buy_4'}
 
         return {'signal': 'HOLD', 'reason': 'no_signal'}
 
