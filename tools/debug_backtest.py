@@ -381,44 +381,78 @@ class DebugBacktest:
         return (current_date - self.entry_date).days
 
     def _check_stop_loss_conditions(self, data: pd.DataFrame, current_index: int, current_date: pd.Timestamp) -> Optional[str]:
-        """損切り条件チェック - 二段階方式"""
+        """損切り条件チェック - ATRベースのみ"""
         if self.entry_price is None:
             return None
 
-        current_close = data.iloc[current_index]['close']
-        loss_rate = (current_close - self.entry_price) / self.entry_price
-
-        # 日次ドローダウン95%閾値チェック
-        if self._check_daily_dd_p95(data, current_index):
-            return "daily_dd_p97_stop_loss"
-
-        # 二段階損切り
-        if loss_rate <= -0.08:  # -8%で全額損切り
-            return "full_stop_loss"
-        elif loss_rate <= -0.05:  # -5%で半分損切り
-            return "partial_stop_loss"
+        # ATRベース損切りチェック（唯一の損切りロジック）
+        atr_stop_signal = self._check_atr_stop_loss(data, current_index)
+        if atr_stop_signal:
+            return atr_stop_signal
 
         return None
 
-    def _check_daily_dd_p95(self, data: pd.DataFrame, current_index: int) -> bool:
-        """日次ドローダウン95%閾値チェック - 閾値を緩和"""
-        if current_index < 20:
-            return False
+    def _check_atr_stop_loss(self, data: pd.DataFrame, current_index: int) -> Optional[str]:
+        """ATRベースの損切りチェック"""
+        if self.entry_price is None:
+            return None
 
-        # 過去20日間の日次リターン
-        daily_returns = data['close'].pct_change().iloc[current_index-19:current_index+1]
+        # ATRパラメータ（デフォルト値）
+        multiplier = 2.5
+        atr_period = 14
 
-        # 97%分位点の計算（閾値を緩和: p95 → p97相当）
-        if len(daily_returns) >= 20:
-            p97_threshold = daily_returns.quantile(0.03)  # 3%分位点（下側）- p97相当
-            current_return = data['close'].iloc[current_index] / data['close'].iloc[current_index-1] - 1
+        # 当日のATRを計算
+        current_atr = self._calculate_current_atr(data, current_index, atr_period)
+        if current_atr is None:
+            return None
 
-            # 現在のリターンが97%閾値を下回った場合（より厳しい条件）
-            if current_return < p97_threshold:
-                print(f"  → daily_dd_p97損切り発動: {current_return:.2%} < {p97_threshold:.2%}")
-                return True
+        # 許容下落額の計算
+        allowed_loss = current_atr * multiplier
 
-        return False
+        # 損切りラインの計算
+        if self.side == "LONG":
+            stop_loss_price = self.entry_price - allowed_loss
+            # 当日の安値が損切りラインを下回ったら損切り
+            current_low = data.iloc[current_index]['low']
+            if current_low <= stop_loss_price:
+                print(f"  → ATR損切り発動: 安値{current_low} <= 損切りライン{stop_loss_price:.1f} (ATR:{current_atr:.1f} × {multiplier})")
+                return f"atr_stop_loss_{multiplier}x"
+
+        return None
+
+    def _calculate_current_atr(self, data: pd.DataFrame, current_index: int, period: int = 14) -> Optional[float]:
+        """当日のATRを計算"""
+        if current_index < period:
+            return None
+
+        # True Rangeの計算
+        high = data['high']
+        low = data['low']
+        close = data['close']
+
+        # 当日のTrue Range
+        tr1 = high.iloc[current_index] - low.iloc[current_index]
+        tr2 = abs(high.iloc[current_index] - close.iloc[current_index-1]) if current_index >= 1 else 0
+        tr3 = abs(low.iloc[current_index] - close.iloc[current_index-1]) if current_index >= 1 else 0
+
+        current_tr = max(tr1, tr2, tr3)
+
+        # 過去period日間のTrue Rangeの平均（ATR）
+        tr_values = []
+        for i in range(current_index-period+1, current_index+1):
+            if i >= 1:
+                tr1_i = high.iloc[i] - low.iloc[i]
+                tr2_i = abs(high.iloc[i] - close.iloc[i-1])
+                tr3_i = abs(low.iloc[i] - close.iloc[i-1])
+                tr_i = max(tr1_i, tr2_i, tr3_i)
+                tr_values.append(tr_i)
+
+        if len(tr_values) >= period:
+            atr = sum(tr_values) / len(tr_values)
+            return atr
+
+        return None
+
 
     def _execute_buy(self, price: float, date: pd.Timestamp, reason: str) -> bool:
         """買い注文実行"""

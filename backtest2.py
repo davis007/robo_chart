@@ -185,8 +185,20 @@ class ParametricBacktest:
         streak = features.get("streak", {})
         dd = features.get("dd", {})
 
+        # ATRベースの損切りパラメータ（デフォルト値）
+        sl_atr_multiplier = self.params.get("sl_atr_multiplier", 2.5)
+        atr_period = self.params.get("atr_period", 14)  # デフォルト14日
+
         rules = {
-            # 損切りルール
+            # ATRベース損切りルール
+            "stop_loss_atr": {
+                "multiplier": sl_atr_multiplier,
+                "period": atr_period,
+                "long": -sl_atr_multiplier,  # ロングポジションの損切り閾値（ATRの倍数）
+                "short": sl_atr_multiplier   # ショートポジションの損切り閾値（ATRの倍数）
+            },
+
+            # 従来の損切りルール（バックアップ用）
             "stop_loss": {
                 "long": dd.get("daily_dd_mean", -0.01) + 2 * dd.get("daily_dd_std", 0.02),
                 "short": -(dd.get("daily_dd_mean", -0.01) + 2 * dd.get("daily_dd_std", 0.02))
@@ -287,37 +299,27 @@ class ParametricBacktest:
         dd_feat = features.get("dd", {})
         returns_feat = features.get("returns", {})
 
-        stop_loss_rules = rules.get("stop_loss", {})
-        take_profit_rules = rules.get("take_profit", {})
+        stop_loss_atr_rules = rules.get("stop_loss_atr", {})
 
-        # 損切りチェック
-        if self.side == "LONG":
-            stop_loss_level = self.entry_price * (1 + stop_loss_rules.get("long", -0.03))
-            if current_close <= stop_loss_level:
-                return {'signal': 'SELL', 'reason': 'stop_loss'}
+        # 優先度1: ATRベース損切りチェック（最優先）
+        atr_stop_signal = self._check_atr_stop_loss(data, date, stop_loss_atr_rules)
+        if atr_stop_signal:
+            return atr_stop_signal
 
-            take_profit_level = self.entry_price * (1 + take_profit_rules.get("long", 0.05))
-            if current_close >= take_profit_level:
-                return {'signal': 'SELL', 'reason': 'take_profit'}
+        # 優先度2: JSON駆動の利食いシグナル（高優先度）
+        json_exit_signals = self._check_json_exit_signals(data, date)
+        if json_exit_signals:
+            return json_exit_signals
 
-        elif self.side == "SHORT":
-            stop_loss_level = self.entry_price * (1 + stop_loss_rules.get("short", 0.03))
-            if current_close >= stop_loss_level:
-                return {'signal': 'BUY', 'reason': 'stop_loss'}
-
-            take_profit_level = self.entry_price * (1 + take_profit_rules.get("short", -0.05))
-            if current_close <= take_profit_level:
-                return {'signal': 'BUY', 'reason': 'take_profit'}
-
-        # 保有日数制限
+        # 優先度3: 保有日数制限
         if self.entry_date:
             hold_days = (date - self.entry_date).days
-            max_hold = rules.get("max_hold_days", 20)
+            max_hold = self.params.get("max_hold_days", 30)
             if hold_days >= max_hold:
                 return {'signal': 'SELL' if self.side == "LONG" else 'BUY',
                         'reason': 'max_hold_days'}
 
-        # 暴落例外ルール
+        # 優先度4: 暴落例外ルール
         crash_threshold = rules.get("crash_exception", {}).get("threshold", -0.08)
         recent_dd = self._calculate_recent_drawdown(data)
         if recent_dd <= crash_threshold:
@@ -325,6 +327,99 @@ class ParametricBacktest:
                     'reason': 'crash_exception'}
 
         return {'signal': 'HOLD', 'reason': 'no_exit_signal'}
+
+    def _check_atr_stop_loss(self, data: pd.DataFrame, date: pd.Timestamp, stop_loss_atr_rules: Dict) -> Optional[Dict]:
+        """ATRベースの損切りチェック"""
+        if self.entry_price is None or self.side == "FLAT":
+            return None
+
+        # ATRパラメータの取得
+        multiplier = stop_loss_atr_rules.get("multiplier", 2.5)
+        atr_period = stop_loss_atr_rules.get("period", 14)
+
+        # 当日のATRを計算
+        current_atr = self._calculate_current_atr(data, atr_period)
+        if current_atr is None:
+            return None
+
+        # 許容下落額の計算
+        allowed_loss = current_atr * multiplier
+
+        # 損切りラインの計算
+        if self.side == "LONG":
+            stop_loss_price = self.entry_price - allowed_loss
+            # 当日の安値が損切りラインを下回ったら損切り
+            current_low = data.iloc[-1]['low']
+            if current_low <= stop_loss_price:
+                print(f"  → ATR損切り発動: 安値{current_low} <= 損切りライン{stop_loss_price:.1f} (ATR:{current_atr:.1f} × {multiplier})")
+                return {'signal': 'SELL', 'reason': f'atr_stop_loss_{multiplier}x'}
+
+        elif self.side == "SHORT":
+            stop_loss_price = self.entry_price + allowed_loss
+            # 当日の高値が損切りラインを上回ったら損切り
+            current_high = data.iloc[-1]['high']
+            if current_high >= stop_loss_price:
+                print(f"  → ATR損切り発動: 高値{current_high} >= 損切りライン{stop_loss_price:.1f} (ATR:{current_atr:.1f} × {multiplier})")
+                return {'signal': 'BUY', 'reason': f'atr_stop_loss_{multiplier}x'}
+
+        return None
+
+    def _calculate_current_atr(self, data: pd.DataFrame, period: int = 14) -> Optional[float]:
+        """当日のATRを計算"""
+        if len(data) < period + 1:
+            return None
+
+        # True Rangeの計算
+        high = data['high']
+        low = data['low']
+        close = data['close']
+
+        # 当日のTrue Range
+        tr1 = high.iloc[-1] - low.iloc[-1]
+        tr2 = abs(high.iloc[-1] - close.iloc[-2]) if len(data) >= 2 else 0
+        tr3 = abs(low.iloc[-1] - close.iloc[-2]) if len(data) >= 2 else 0
+
+        current_tr = max(tr1, tr2, tr3)
+
+        # 過去period日間のTrue Rangeの平均（ATR）
+        tr_values = []
+        for i in range(len(data)-period, len(data)):
+            if i >= 1:
+                tr1_i = high.iloc[i] - low.iloc[i]
+                tr2_i = abs(high.iloc[i] - close.iloc[i-1])
+                tr3_i = abs(low.iloc[i] - close.iloc[i-1])
+                tr_i = max(tr1_i, tr2_i, tr3_i)
+                tr_values.append(tr_i)
+
+        if len(tr_values) >= period:
+            atr = sum(tr_values) / len(tr_values)
+            return atr
+
+        return None
+
+    def _check_json_exit_signals(self, data: pd.DataFrame, date: pd.Timestamp) -> Optional[Dict]:
+        """JSON駆動の利食いシグナルチェック"""
+        if self.side != "LONG" or self.entry_price is None:
+            return None
+
+        # JSONパラメータの取得
+        tp_rsi_exit = self.params.get("tp_rsi_exit", 75.0)
+        tp_trd_exit_days = self.params.get("tp_trd_exit_days", 20)
+
+        # 現在のデータを取得
+        current_data = data.iloc[-1]
+
+        # SELLシグナル 1：RSI過熱圏での利食い
+        if 'rsi_14' in current_data and current_data['rsi_14'] >= tp_rsi_exit:
+            print(f"  → RSI利食い発動: RSI{current_data['rsi_14']:.1f} >= 閾値{tp_rsi_exit}")
+            return {'signal': 'SELL', 'reason': f'RSI_TP_EXIT_SELL_{tp_rsi_exit}'}
+
+        # SELLシグナル 2：銘柄の最長トレンド継続日数による利食い
+        if 'trd_5pct_days' in current_data and current_data['trd_5pct_days'] >= tp_trd_exit_days:
+            print(f"  → TRD日数利食い発動: TRD日数{current_data['trd_5pct_days']} >= 閾値{tp_trd_exit_days}")
+            return {'signal': 'SELL', 'reason': f'TRD_DAYS_EXIT_SELL_{tp_trd_exit_days}'}
+
+        return None
 
     def _calculate_recent_drawdown(self, data: pd.DataFrame) -> float:
         """直近のドローダウンを計算"""

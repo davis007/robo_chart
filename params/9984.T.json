@@ -270,5 +270,10 @@
     "最大ドローダウンが59.9%と大きく、暴落耐性が重要",
     "ヒストリカルボラティリティが39.2%と高く、大きな値動きを期待"
   ],
+  "sl_atr_multiplier": 2.5,
+  "atr_period": 14,
+  "tp_rsi_exit": 75.0,
+  "tp_trd_exit_days": 20,
+  "max_hold_days": 30,
   "version": "params-v1"
 }

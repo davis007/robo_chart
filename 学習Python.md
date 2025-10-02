@@ -9,7 +9,7 @@ KabuRoboは株の仮想売買バックテストシステムで、yfinanceを使�
 __使用方法:__
 
 ```bash
-python tools/analyze_chart.py 9984.T --years 5 --min-years 3
+python tools/analyze_chart.py 9501.T --years 5 --min-years 3
 ```
 
 __機能:__
@@ -37,7 +37,7 @@ __機能:__
 __使用方法:__
 
 ```bash
-python tools/debug_backtest.py --symbol 9984.T --params params/9984.T.json --start 2024-01-01 --end 2024-12-31
+python tools/debug_backtest.py --symbol 9501.T --params params/9501.T.json --start 2024-01-01 --end 2024-12-31
 ```
 
 __機能:__
