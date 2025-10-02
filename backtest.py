@@ -412,7 +412,7 @@ class Backtest:
                 # FLAT状態 → ショートエントリー
                 if self.side == "FLAT":
                     # 資金チェック（ショートは証拠金が必要）
-                    margin_required = current_close * self.position_size * 0.3  # 30%証拠金
+                    margin_required = current_close * self.position_size * 0.1  # 10%証拠金に緩和
                     if margin_required <= self.cash:
                         # 売り注文実行
                         self.cash += current_close * self.position_size  # 売却代金を受け取る
@@ -493,7 +493,9 @@ class Backtest:
                 unrealized_pnl = round((self.entry_price - current_close) * self.size)
 
             # ログ出力
-            log_size = sell_quantity if signal == "SELL" and trade_executed else self.size
+            log_size = self.size
+            if signal == "SELL" and trade_executed and self.side == "FLAT":
+                log_size = self.size  # ロング解消時の数量
             self._output_daily_log(
                 date.strftime('%Y-%m-%d'),
                 round(current_close),
@@ -753,10 +755,11 @@ def main():
     parser.add_argument('--symbol', required=True, help='銘柄コード（例: 9984.T）')
     parser.add_argument('--start', required=True, help='開始日（YYYY-MM-DD）')
     parser.add_argument('--end', required=True, help='終了日（YYYY-MM-DD）')
+    parser.add_argument('--position_size', type=int, default=100, help='ポジションサイズ（デフォルト: 100株）')
 
     args = parser.parse_args()
 
-    backtest = Backtest()
+    backtest = Backtest(position_size=args.position_size)
     backtest.run(args.strategy, args.symbol, args.start, args.end)
 
 

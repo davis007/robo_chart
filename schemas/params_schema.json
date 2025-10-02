@@ -1,0 +1,208 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Stock Parameters Schema",
+  "description": "244項目の株価特徴量パラメータスキーマ",
+  "type": "object",
+  "required": [
+    "symbol",
+    "span_years",
+    "split",
+    "stats",
+    "features",
+    "notes",
+    "version"
+  ],
+  "properties": {
+    "symbol": {
+      "type": "string",
+      "description": "銘柄コード"
+    },
+    "span_years": {
+      "type": "integer",
+      "minimum": 3,
+      "maximum": 10,
+      "description": "分析年数"
+    },
+    "split": {
+      "type": "object",
+      "required": [
+        "train_start",
+        "train_end",
+        "valid_start",
+        "valid_end"
+      ],
+      "properties": {
+        "train_start": {
+          "type": "string",
+          "format": "date",
+          "description": "学習期間開始日"
+        },
+        "train_end": {
+          "type": "string",
+          "format": "date",
+          "description": "学習期間終了日"
+        },
+        "valid_start": {
+          "type": "string",
+          "format": "date",
+          "description": "検証期間開始日"
+        },
+        "valid_end": {
+          "type": "string",
+          "format": "date",
+          "description": "検証期間終了日"
+        }
+      }
+    },
+    "stats": {
+      "type": "object",
+      "required": [
+        "growth_5y",
+        "cagr_5y",
+        "max_dd_5y",
+        "max_dd_start_date",
+        "max_dd_end_date",
+        "dd_recovery_days_max",
+        "yearly_return_mean",
+        "yearly_return_std"
+      ],
+      "properties": {
+        "growth_5y": {
+          "type": "number",
+          "description": "5年トータル成長率"
+        },
+        "cagr_5y": {
+          "type": "number",
+          "description": "年率換算リターン"
+        },
+        "max_dd_5y": {
+          "type": "number",
+          "maximum": 0,
+          "description": "5年最大ドローダウン率"
+        },
+        "max_dd_start_date": {
+          "type": "string",
+          "format": "date",
+          "description": "最大DD開始日"
+        },
+        "max_dd_end_date": {
+          "type": "string",
+          "format": "date",
+          "description": "最大DD終了日"
+        },
+        "dd_recovery_days_max": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "最大DD回復日数"
+        },
+        "yearly_return_mean": {
+          "type": "number",
+          "description": "年次リターン平均"
+        },
+        "yearly_return_std": {
+          "type": "number",
+          "minimum": 0,
+          "description": "年次リターン標準偏差"
+        }
+      }
+    },
+    "features": {
+      "type": "object",
+      "required": [
+        "returns",
+        "trend",
+        "vol",
+        "osc",
+        "candle",
+        "volume",
+        "streak",
+        "dd",
+        "regime",
+        "pricepos"
+      ],
+      "properties": {
+        "returns": {
+          "type": "object",
+          "description": "リターン系特徴量（54項目）",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "trend": {
+          "type": "object",
+          "description": "トレンド系特徴量（40項目）",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "vol": {
+          "type": "object",
+          "description": "ボラティリティ系特徴量（24項目）",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "osc": {
+          "type": "object",
+          "description": "オシレーター系特徴量（22項目）",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "candle": {
+          "type": "object",
+          "description": "ローソク足系特徴量（30項目）",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "volume": {
+          "type": "object",
+          "description": "出来高系特徴量（20項目）",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "streak": {
+          "type": "object",
+          "description": "連続性系特徴量（18項目）",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "dd": {
+          "type": "object",
+          "description": "ドローダウン系特徴量（20項目）",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "regime": {
+          "type": "object",
+          "description": "レジーム/季節系特徴量（16項目）",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "pricepos": {
+          "type": "object",
+          "description": "価格位置系特徴量（12項目）",
+          "additionalProperties": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "観察メモ"
+    },
+    "version": {
+      "type": "string",
+      "description": "スキーマバージョン"
+    }
+  }
+}

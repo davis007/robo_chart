@@ -13,7 +13,7 @@ from typing import Optional
 class Strategy:
     """高澤式戦略クラス"""
 
-    def __init__(self, bb_period: int = 20, bb_std: int = 1, rci_period: int = 9):
+    def __init__(self, bb_period: int = 20, bb_std: int = 2, rci_period: int = 9):
         """
         初期化
 
@@ -100,7 +100,7 @@ class Strategy:
 
         current_price = data.iloc[current_idx][close_col]
 
-        # シグナル判定
+        # シグナル判定（厳格な条件に戻す）
         if current_price <= lower_band:
             return 'BUY'  # 下バンドを割り込んだら買い
         elif current_price >= upper_band:
@@ -129,10 +129,10 @@ class Strategy:
         sum_d_squared = sum((d - p) ** 2 for d, p in zip(dates, price_ranks))
         rci = (1 - (6 * sum_d_squared) / (n * (n ** 2 - 1))) * 100
 
-        # シグナル判定
-        if rci <= -70:  # 売られすぎ
+        # シグナル判定（条件を緩和）
+        if rci <= -60:  # 売られすぎ（-70 → -60に緩和）
             return 'BUY'
-        elif rci >= 70:  # 買われすぎ
+        elif rci >= 60:  # 買われすぎ（70 → 60に緩和）
             return 'SELL'
         else:
             return 'NONE'
