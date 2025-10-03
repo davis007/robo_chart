@@ -251,7 +251,9 @@ class Backtest:
         self.trades: List[Dict] = []  # 取引履歴
         self.equity_list: List[int] = []  # 資産曲線
         self.closed_trades: List[Dict] = []  # クローズした取引
+        self.trade_pairs: List[Dict] = []  # エントリー・決済ペア
         self.wins = 0  # 勝ちトレード数
+        self.current_trade: Dict = None  # 現在のトレード情報
 
     def run(self, strategy_name: str, symbol: str, start_date: str, end_date: str):
         """
@@ -338,6 +340,8 @@ class Backtest:
             signal_result = strategy.calculate_signal(past_90, date, ctx)
             signal = signal_result.get('signal', 'HOLD')
             reason = signal_result.get('reason', 'no_signal')
+            rci_value = signal_result.get('rci_value')
+            adx_value = signal_result.get('adx_value')
 
             # 取引実行
             trade_executed = False
@@ -364,9 +368,22 @@ class Backtest:
                             'price': current_close,
                             'quantity': self.position_size,
                             'pnl': 0,
-                            'position_type': 'LONG_ENTRY'
+                            'position_type': 'LONG_ENTRY',
+                            'rci_value': rci_value,
+                            'adx_value': adx_value
                         }
                         self.trades.append(trade)
+
+                        # 現在のトレード情報を記録
+                        self.current_trade = {
+                            'entry_date': date.strftime('%Y-%m-%d'),
+                            'entry_price': current_close,
+                            'position_type': 'LONG',
+                            'quantity': self.position_size,
+                            'rci_value': rci_value,
+                            'adx_value': adx_value,
+                            'signal_reason': reason
+                        }
 
                 # SHORT状態 → ショート解消
                 elif self.side == "SHORT":
@@ -401,6 +418,24 @@ class Backtest:
                     }
                     self.closed_trades.append(closed_trade)
 
+                    # トレードペアを作成
+                    if self.current_trade:
+                        trade_pair = {
+                            'entry_date': self.current_trade['entry_date'],
+                            'entry_price': self.current_trade['entry_price'],
+                            'exit_date': date.strftime('%Y-%m-%d'),
+                            'exit_price': current_close,
+                            'position_type': 'SHORT',
+                            'quantity': self.size,
+                            'pnl': pnl,
+                            'entry_rci': self.current_trade.get('rci_value'),
+                            'entry_adx': self.current_trade.get('adx_value'),
+                            'signal_reason': self.current_trade.get('signal_reason'),
+                            'exit_reason': reason
+                        }
+                        self.trade_pairs.append(trade_pair)
+                        self.current_trade = None
+
                     # ポジション状態をリセット
                     self.side = "FLAT"
                     self.entry_price = None
@@ -428,9 +463,22 @@ class Backtest:
                             'price': current_close,
                             'quantity': self.position_size,
                             'pnl': 0,
-                            'position_type': 'SHORT_ENTRY'
+                            'position_type': 'SHORT_ENTRY',
+                            'rci_value': rci_value,
+                            'adx_value': adx_value
                         }
                         self.trades.append(trade)
+
+                        # 現在のトレード情報を記録
+                        self.current_trade = {
+                            'entry_date': date.strftime('%Y-%m-%d'),
+                            'entry_price': current_close,
+                            'position_type': 'SHORT',
+                            'quantity': self.position_size,
+                            'rci_value': rci_value,
+                            'adx_value': adx_value,
+                            'signal_reason': reason
+                        }
 
                 # LONG状態 → ロング解消
                 elif self.side == "LONG":
@@ -466,6 +514,24 @@ class Backtest:
                         'position_type': 'LONG'
                     }
                     self.closed_trades.append(closed_trade)
+
+                    # トレードペアを作成
+                    if self.current_trade:
+                        trade_pair = {
+                            'entry_date': self.current_trade['entry_date'],
+                            'entry_price': self.current_trade['entry_price'],
+                            'exit_date': date.strftime('%Y-%m-%d'),
+                            'exit_price': current_close,
+                            'position_type': 'LONG',
+                            'quantity': sell_quantity,
+                            'pnl': pnl,
+                            'entry_rci': self.current_trade.get('rci_value'),
+                            'entry_adx': self.current_trade.get('adx_value'),
+                            'signal_reason': self.current_trade.get('signal_reason'),
+                            'exit_reason': reason
+                        }
+                        self.trade_pairs.append(trade_pair)
+                        self.current_trade = None
 
                     # ポジション状態をリセット
                     self.side = "FLAT"
@@ -503,7 +569,7 @@ class Backtest:
                 log_size,
                 pnl if trade_executed else unrealized_pnl,
                 round(total_equity),
-                reason if trade_executed and signal == "SELL" else None
+                reason if trade_executed else None  # エントリー時にもシグナル情報を記録
             )
 
         # 最終的なポジションを清算
@@ -619,6 +685,11 @@ class Backtest:
         # パフォーマンス出力
         self._output_performance(strategy_name, symbol)
 
+        # トレードペアを自動エクスポート
+        if self.trade_pairs:
+            self.export_trade_pairs('csv')
+            self.export_trade_pairs('json')
+
     def _load_strategy(self, strategy_name: str):
         """戦略を読み込む"""
         try:
@@ -640,11 +711,14 @@ class Backtest:
             if signal == "BUY":
                 # BUYシグナル：ロング建て or ショート解消
                 if self.side == "LONG":
-                    # ロング建て
-                    f.write(f"{base_output} BUY 数量={size} ロング建て 累計資産={total_equity}\n")
+                    # ロング建て（エントリー時）
+                    if reason:
+                        f.write(f"{base_output} BUY 数量={size} ロング建て 累計資産={total_equity} シグナル={reason}\n")
+                    else:
+                        f.write(f"{base_output} BUY 数量={size} ロング建て 累計資産={total_equity}\n")
                 elif self.side == "FLAT":
                     # ショート解消
-                    f.write(f"{base_output} BUY 数量={size} ショート決済 損益={pnl:+} 累計資産={total_equity}\n")
+                    f.write(f"{base_output} BUY 数量={size} ショート決済 損益={pnl:+} 累計資産={total_equity} 理由={reason}\n")
                 else:
                     # その他のケース
                     f.write(f"{base_output} BUY 数量={size} 損益=0 累計資産={total_equity}\n")
@@ -652,8 +726,11 @@ class Backtest:
             elif signal == "SELL":
                 # SELLシグナル：ショート建て or ロング解消
                 if self.side == "SHORT":
-                    # ショート建て
-                    f.write(f"{base_output} SELL 数量={size} ショート建て 累計資産={total_equity}\n")
+                    # ショート建て（エントリー時）
+                    if reason:
+                        f.write(f"{base_output} SELL 数量={size} ショート建て 累計資産={total_equity} シグナル={reason}\n")
+                    else:
+                        f.write(f"{base_output} SELL 数量={size} ショート建て 累計資産={total_equity}\n")
                 elif self.side == "FLAT":
                     # ロング解消
                     f.write(f"{base_output} SELL 数量={size} ロング決済 損益={pnl:+} 累計資産={total_equity} 理由={reason}\n")
@@ -746,6 +823,81 @@ class Backtest:
             max_drawdown = max(max_drawdown, dd)
 
         return max_drawdown
+
+    def export_trade_pairs(self, format_type: str = 'csv'):
+        """
+        トレードペアをエクスポート
+
+        Args:
+            format_type: 出力形式 ('csv' または 'json')
+        """
+        if not self.trade_pairs:
+            print("エクスポートするトレードデータがありません")
+            return
+
+        if format_type == 'csv':
+            self._export_to_csv()
+        elif format_type == 'json':
+            self._export_to_json()
+        else:
+            print(f"サポートされていない形式: {format_type}")
+
+    def _export_to_csv(self):
+        """CSV形式でエクスポート"""
+        import csv
+
+        filename = 'trade_pairs.csv'
+        with open(filename, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+
+            # ヘッダー行
+            writer.writerow([
+                'エントリー日', 'エントリー価格', '決済日', '決済価格',
+                'ポジションタイプ', '数量', '損益', 'エントリーRCI', 'エントリーADX',
+                'シグナル理由', '決済理由'
+            ])
+
+            # データ行
+            for trade in self.trade_pairs:
+                writer.writerow([
+                    trade['entry_date'],
+                    trade['entry_price'],
+                    trade['exit_date'],
+                    trade['exit_price'],
+                    trade['position_type'],
+                    trade['quantity'],
+                    trade['pnl'],
+                    trade.get('entry_rci', ''),
+                    trade.get('entry_adx', ''),
+                    trade.get('signal_reason', ''),
+                    trade.get('exit_reason', '')
+                ])
+
+        print(f"トレードペアをCSV形式でエクスポートしました: {filename}")
+
+    def _export_to_json(self):
+        """JSON形式でエクスポート"""
+        import json
+
+        filename = 'trade_pairs.json'
+
+        # データをJSON形式で整形
+        export_data = {
+            'trade_pairs': self.trade_pairs,
+            'summary': {
+                'total_trades': len(self.trade_pairs),
+                'total_pnl': sum(trade['pnl'] for trade in self.trade_pairs),
+                'long_trades': len([t for t in self.trade_pairs if t['position_type'] == 'LONG']),
+                'short_trades': len([t for t in self.trade_pairs if t['position_type'] == 'SHORT']),
+                'winning_trades': len([t for t in self.trade_pairs if t['pnl'] > 0]),
+                'losing_trades': len([t for t in self.trade_pairs if t['pnl'] < 0])
+            }
+        }
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(export_data, f, ensure_ascii=False, indent=2)
+
+        print(f"トレードペアをJSON形式でエクスポートしました: {filename}")
 
 
 def main():
