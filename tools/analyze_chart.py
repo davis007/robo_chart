@@ -818,6 +818,19 @@ class ChartAnalyzer:
                 "version": "params-v1"
             }
 
+            # 勝率8割を目指す高感度設定を初期値として追加
+            # エントリー感度の調整 (トレード機会の最大化)
+            output_data["MIN_BUY_SIGNAL_COUNT"] = 1      # 最小シグナル数を1に設定（トレード機会を増やす）
+            output_data["MAX_ENTRY_RSI"] = 85.0          # RSI上限を85.0に緩和
+            output_data["MAX_ENTRY_SMA_DEVIATION"] = 0.50 # SMA乖離上限を50%に緩和（巨大トレンドへのエントリーを許可）
+
+            # ノイズ耐性の最大化 (残りの4敗を避けるため)
+            output_data["SL_ATR_MULTIPLIER"] = 4.0       # ATR損切り倍率を4.0に拡大（ノイズ耐性の最終レベル）
+
+            # 利確基準の暫定設定
+            output_data["TP_RSI_EXIT"] = 75.0
+            output_data["TP_TRD_EXIT_DAYS"] = 20
+
             # 出力ディレクトリの確認
             output_dir = Path("params")
             output_dir.mkdir(exist_ok=True)

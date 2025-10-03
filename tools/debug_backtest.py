@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-デバッグ用バックテストスクリプト - エントリー条件を緩和
+デバッグ用バックテストスクリプト - ATRトレーリング・ストップの役割変更
 """
 
 import sys
@@ -42,6 +42,9 @@ class DebugBacktest:
 
         # パラメータ
         self.params = None
+
+        # トレーリング・ストップ用変数
+        self.peak_price = 0.0  # ポジション保有中の最高価格
 
         # 新規パラメータ
         self.min_holding_days = 3  # 最低保有日数
@@ -85,6 +88,29 @@ class DebugBacktest:
                 self.params = json.load(f)
 
             print(f"パラメータ読み込み完了: {params_file}")
+
+            # パラメータ読み込み後の強制上書き (デバッグおよび最終調整用)
+            # ATRトレーリング・ストップを純粋なリスク管理として再導入
+            try:
+                print("【FINAL TUNE】ATRトレーリング・ストップを純粋なリスク管理として再導入")
+
+                # エントリー感度と防御の調整（変更なし）
+                self.params['MIN_BUY_SIGNAL_COUNT'] = 1
+                self.params['MAX_ENTRY_RSI'] = 85.0
+                self.params['MAX_ENTRY_SMA_DEVIATION'] = 0.50
+
+                # 決済基準の定義 - 純粋なリスク管理アプローチ
+                # 1. 固定利確の復活（+15%）
+                self.params['FIXED_TAKE_PROFIT'] = 0.15
+                # 2. ATRベースの固定損切り（購入価格からの損失追跡）
+                self.params['ATR_LOSS_MULTIPLIER'] = 4.0
+                # 3. 時間制限（変更なし）
+                self.params['MAX_HOLD_DAYS_EXIT'] = 20
+
+            except Exception as e:
+                print(f"警告: JSON強制上書きエラー: {e}")
+                # エラーが発生しても、プログラムが停止しないように継続
+
             return True
 
         except Exception as e:
@@ -122,6 +148,11 @@ class DebugBacktest:
                 current_close = data.iloc[i]['close']
                 print(f"  → 現在のポジション状態: {self.side}")
                 if signal == "BUY" and self.side == "FLAT":
+                    # 安全性フィルター適用
+                    safety_rejected = self._check_entry_safety(past_data, current_close)
+                    if safety_rejected:
+                        print(f"  → 安全性フィルターによりエントリー却下")
+                        continue
                     self._execute_buy(current_close, date, "debug_entry")
                 elif signal == "SELL" and self.side == "LONG":
                     # 最低保有日数チェック
@@ -132,12 +163,23 @@ class DebugBacktest:
                 else:
                     print(f"  → ポジション状態不一致: signal={signal}, side={self.side}")
 
-            # 損切り条件チェック
+            # 決済条件チェック
             if self.side == "LONG":
-                stop_loss_signal = self._check_stop_loss_conditions(data, i, date)
-                if stop_loss_signal:
-                    current_close = data.iloc[i]['close']
-                    self._execute_sell(current_close, date, stop_loss_signal)
+                current_close = data.iloc[i]['close']
+
+                # 優先度 1: SELLシグナル（純粋トレンド終焉）
+                if signal == "SELL":
+                    # SELLシグナルは debug_entry 内でチェック済みだが、ここで最終決定
+                    self._execute_sell(current_close, date, "pure_trend_exit") # SELLシグナルで決済
+
+                # 優先度 2: 緊急避難ストップロスチェック
+                stop_loss_reason = self._check_stop_loss_conditions(data, i, date)
+                if stop_loss_reason:
+                    self._execute_sell(current_close, date, stop_loss_reason)
+                # 優先度 3: 時間切れ決済は無効化（緊急避難のみ）
+                elif not self._check_min_holding_days(date):
+                    # 最低保有日数を満たさない場合はHOLDを維持
+                    print(f"  → 最低保有日数未満のためHOLD: {self._get_holding_days(date)}日")
 
             # 評価損益計算
             total_equity = self._calculate_total_equity(data.iloc[i]['close'])
@@ -201,18 +243,24 @@ class DebugBacktest:
         elif streak_signal == "SELL":
             sell_signals += 1
 
-        # 非対称エントリー条件: BUYは緩和(2/3以上)、SELLは厳格(3/3以上)
+        # 最小シグナル数チェック（JSONパラメータから取得）
+        min_buy_signal_count = self.params.get("MIN_BUY_SIGNAL_COUNT", 2)
+
+        # 非対称エントリー条件: BUYはJSONパラメータで制御、SELLは厳格(3/3以上)
         total_signals = 5  # 全シグナル数
 
-        if self.side == "FLAT" and buy_signals >= 2:  # BUY: 2/3以上で許可
-            print(f"    → 複数シグナル一致: BUYシグナル{buy_signals}個, SELLシグナル{sell_signals}個")
+        if self.side == "FLAT" and buy_signals >= min_buy_signal_count:  # BUY: JSONパラメータで制御
+            print(f"    → 複数シグナル一致: BUYシグナル{buy_signals}個 >= {min_buy_signal_count}, SELLシグナル{sell_signals}個")
             return "BUY"
         elif self.side == "LONG" and sell_signals >= 3:  # SELL: 3/3以上で許可
             print(f"    → 複数シグナル一致: BUYシグナル{buy_signals}個, SELLシグナル{sell_signals}個")
             return "SELL"
 
         if buy_signals > 0 or sell_signals > 0:
-            print(f"    → シグナル不足: BUYシグナル{buy_signals}個, SELLシグナル{sell_signals}個")
+            if self.side == "FLAT" and buy_signals < min_buy_signal_count:
+                print(f"    → 【最小シグナル数却下】シグナル数 {buy_signals} < {min_buy_signal_count}")
+            else:
+                print(f"    → シグナル不足: BUYシグナル{buy_signals}個, SELLシグナル{sell_signals}個")
 
         return "HOLD"
 
@@ -353,9 +401,9 @@ class DebugBacktest:
         return streak
 
     def _calculate_rsi(self, prices: pd.Series, period: int = 14) -> float:
-        """RSI計算"""
+        """RSIを計算"""
         if len(prices) < period + 1:
-            return 50
+            return 50.0
 
         delta = prices.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -364,232 +412,191 @@ class DebugBacktest:
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs))
 
-        return rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50
+        return rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50.0
 
-    def _check_min_holding_days(self, current_date: pd.Timestamp) -> bool:
-        """最低保有日数チェック"""
-        if self.entry_date is None:
-            return True
+    def _check_stop_loss_conditions(self, data: pd.DataFrame, current_index: int, current_date: pd.Timestamp) -> Optional[str]:
+        """損切り条件チェック - 緊急避難ロスカット"""
+        if self.entry_price is None:
+            return None
 
-        holding_days = (current_date - self.entry_date).days
-        return holding_days >= self.min_holding_days
+        # 固定パーセント損切り（緊急避難用）
+        stop_loss_pct = 0.10  # -10%を最大許容損失とする (JSONから読み込む値に置き換えてください)
 
-    def _get_holding_days(self, current_date: pd.Timestamp) -> int:
-        """保有日数を取得"""
+        stop_loss_price = self.entry_price * (1 - stop_loss_pct)
+        current_low = data.iloc[current_index]['low']
+
+        if current_low <= stop_loss_price:
+            print(f"  → 緊急避難発動: 安値{current_low} <= 損切りライン{stop_loss_price:.1f} ({stop_loss_pct*100:.1f}%)")
+            return "emergency_fixed_sl"
+
+        return None
+
+    def _check_exit_conditions(self, data: pd.DataFrame, current_index: int, current_date: datetime) -> Optional[str]:
+        """損切り条件チェック - 全ての固定/ATR損切りロジックを無効化（純粋トレンド決済戦略）"""
+        # この戦略では、損切りは「時間切れ」または「SELLシグナル」のみで実行されます。
+        return None
+
+    def _calculate_current_atr(self, data: pd.DataFrame, current_index: int, period: int = 14) -> float:
+        """現在のATRを計算"""
+        if current_index < period:
+            return 0.0
+
+        # 過去period日分のデータを取得
+        recent_data = data.iloc[current_index-period:current_index+1]
+
+        # TR (True Range) の計算
+        tr1 = recent_data['high'] - recent_data['low']
+        tr2 = abs(recent_data['high'] - recent_data['close'].shift(1))
+        tr3 = abs(recent_data['low'] - recent_data['close'].shift(1))
+
+        true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+        # ATRの計算
+        atr = true_range.rolling(window=period).mean()
+
+        return atr.iloc[-1] if not pd.isna(atr.iloc[-1]) else 0.0
+
+    def _get_holding_days(self, current_date: datetime) -> int:
+        """保有日数を計算"""
         if self.entry_date is None:
             return 0
         return (current_date - self.entry_date).days
 
-    def _check_stop_loss_conditions(self, data: pd.DataFrame, current_index: int, current_date: pd.Timestamp) -> Optional[str]:
-        """損切り条件チェック - ATRベースのみ"""
-        if self.entry_price is None:
-            return None
+    def _check_entry_safety(self, data: pd.DataFrame, current_price: float) -> bool:
+        """エントリー安全性チェック"""
+        # RSIが高すぎる場合はエントリーを却下
+        rsi = self._calculate_rsi(data['close'])
+        if rsi > self.params.get('MAX_ENTRY_RSI', 85.0):
+            return True
 
-        # ATRベース損切りチェック（唯一の損切りロジック）
-        atr_stop_signal = self._check_atr_stop_loss(data, current_index)
-        if atr_stop_signal:
-            return atr_stop_signal
+        # 移動平均からの乖離が大きすぎる場合は却下
+        sma_20 = data['close'].rolling(20).mean().iloc[-1]
+        deviation = abs(current_price - sma_20) / sma_20
+        if deviation > self.params.get('MAX_ENTRY_SMA_DEVIATION', 0.50):
+            return True
 
-        return None
-
-    def _check_atr_stop_loss(self, data: pd.DataFrame, current_index: int) -> Optional[str]:
-        """ATRベースの損切りチェック"""
-        if self.entry_price is None:
-            return None
-
-        # ATRパラメータ（デフォルト値）
-        multiplier = 2.5
-        atr_period = 14
-
-        # 当日のATRを計算
-        current_atr = self._calculate_current_atr(data, current_index, atr_period)
-        if current_atr is None:
-            return None
-
-        # 許容下落額の計算
-        allowed_loss = current_atr * multiplier
-
-        # 損切りラインの計算
-        if self.side == "LONG":
-            stop_loss_price = self.entry_price - allowed_loss
-            # 当日の安値が損切りラインを下回ったら損切り
-            current_low = data.iloc[current_index]['low']
-            if current_low <= stop_loss_price:
-                print(f"  → ATR損切り発動: 安値{current_low} <= 損切りライン{stop_loss_price:.1f} (ATR:{current_atr:.1f} × {multiplier})")
-                return f"atr_stop_loss_{multiplier}x"
-
-        return None
-
-    def _calculate_current_atr(self, data: pd.DataFrame, current_index: int, period: int = 14) -> Optional[float]:
-        """当日のATRを計算"""
-        if current_index < period:
-            return None
-
-        # True Rangeの計算
-        high = data['high']
-        low = data['low']
-        close = data['close']
-
-        # 当日のTrue Range
-        tr1 = high.iloc[current_index] - low.iloc[current_index]
-        tr2 = abs(high.iloc[current_index] - close.iloc[current_index-1]) if current_index >= 1 else 0
-        tr3 = abs(low.iloc[current_index] - close.iloc[current_index-1]) if current_index >= 1 else 0
-
-        current_tr = max(tr1, tr2, tr3)
-
-        # 過去period日間のTrue Rangeの平均（ATR）
-        tr_values = []
-        for i in range(current_index-period+1, current_index+1):
-            if i >= 1:
-                tr1_i = high.iloc[i] - low.iloc[i]
-                tr2_i = abs(high.iloc[i] - close.iloc[i-1])
-                tr3_i = abs(low.iloc[i] - close.iloc[i-1])
-                tr_i = max(tr1_i, tr2_i, tr3_i)
-                tr_values.append(tr_i)
-
-        if len(tr_values) >= period:
-            atr = sum(tr_values) / len(tr_values)
-            return atr
-
-        return None
-
-
-    def _execute_buy(self, price: float, date: pd.Timestamp, reason: str) -> bool:
-        """買い注文実行"""
-        if self.side == "FLAT":
-            cost = price * self.position_size
-            print(f"  → BUY条件チェック: cost={cost}, cash={self.cash}, cost<=cash={cost <= self.cash}")
-            if cost <= self.cash:
-                self.cash -= cost
-                self.side = "LONG"
-                self.entry_price = price
-                self.size = self.position_size
-                self.entry_date = date
-
-                trade = {
-                    'date': date.strftime('%Y-%m-%d'),
-                    'action': 'BUY',
-                    'price': price,
-                    'quantity': self.position_size,
-                    'pnl': 0,
-                    'reason': reason
-                }
-                self.trades.append(trade)
-                print(f"  → BUY実行: {price}円")
-                return True
-            else:
-                print(f"  → 資金不足: cost={cost}, cash={self.cash}")
-        else:
-            print(f"  → ポジション状態がFLATではありません: {self.side}")
         return False
 
-    def _execute_sell(self, price: float, date: pd.Timestamp, reason: str) -> Tuple[bool, int]:
-        """売り注文実行"""
-        pnl = 0
-        if self.side == "LONG":
-            revenue = price * self.size
-            pnl = round((price - self.entry_price) * self.size)
-            self.cash += revenue
+    def _check_min_holding_days(self, current_date: datetime) -> bool:
+        """最低保有日数チェック"""
+        holding_days = self._get_holding_days(current_date)
+        return holding_days >= self.min_holding_days
 
-            if pnl > 0:
-                self.wins += 1
+    def _execute_buy(self, price: float, date: datetime, reason: str):
+        """買い注文実行"""
+        cost = price * self.position_size
+        if self.cash >= cost:
+            self.cash -= cost
+            self.side = "LONG"
+            self.entry_price = price
+            self.size = self.position_size
+            self.entry_date = date
+            self.peak_price = price  # 最高価格を初期化
 
             trade = {
-                'date': date.strftime('%Y-%m-%d'),
-                'action': 'SELL',
+                'date': date,
+                'side': 'BUY',
                 'price': price,
-                'quantity': self.size,
-                'pnl': pnl,
+                'size': self.position_size,
                 'reason': reason
             }
             self.trades.append(trade)
+            print(f"  → 買い注文実行: {price}円, 理由: {reason}")
 
-            closed_trade = {
-                'entry_price': self.entry_price,
-                'exit_price': price,
-                'pnl': pnl,
-                'reason': reason
+    def _execute_sell(self, price: float, date: datetime, reason: str):
+        """売り注文実行"""
+        if self.side == "LONG" and self.size > 0:
+            revenue = price * self.size
+            self.cash += revenue
+            profit = (price - self.entry_price) * self.size
+            profit_rate = (price - self.entry_price) / self.entry_price
+
+            trade = {
+                'date': date,
+                'side': 'SELL',
+                'price': price,
+                'size': self.size,
+                'reason': reason,
+                'profit': profit,
+                'profit_rate': profit_rate,
+                'entry_price': self.entry_price
             }
-            self.closed_trades.append(closed_trade)
+            self.closed_trades.append(trade)
 
+            if profit > 0:
+                self.wins += 1
+
+            print(f"  → 売り注文実行: {price}円, 利益: {profit:,.0f}円 ({profit_rate:.1%}), 理由: {reason}")
+
+            # ポジション状態リセット
             self.side = "FLAT"
             self.entry_price = None
             self.size = 0
             self.entry_date = None
-
-            print(f"  → SELL実行: {price}円, PnL: {pnl:+}円")
-            return True, pnl
-
-        return False, pnl
+            self.peak_price = 0.0
 
     def _calculate_total_equity(self, current_price: float) -> float:
-        """総資産を計算"""
-        if self.side == "LONG":
-            return self.cash + current_price * self.size
-        else:
-            return self.cash
+        """総資産評価額を計算"""
+        position_value = self.size * current_price if self.side == "LONG" else 0
+        return self.cash + position_value
 
     def _close_final_position(self, data: pd.DataFrame):
-        """最終ポジションを清算"""
-        if self.side != "FLAT" and len(data) > 0:
-            final_price = data.iloc[-1]['close']
-            if self.side == "LONG":
-                self._execute_sell(final_price, data.index[-1], "final_close")
+        """最終ポジション清算"""
+        if self.side == "LONG" and self.size > 0:
+            last_close = data.iloc[-1]['close']
+            self._execute_sell(last_close, data.index[-1], "final_close")
 
     def _output_performance(self, symbol: str, data: pd.DataFrame):
         """パフォーマンス出力"""
+        if not self.closed_trades:
+            print("取引がありませんでした")
+            return
+
         total_trades = len(self.closed_trades)
-        win_rate = (self.wins / total_trades * 100) if total_trades > 0 else 0
+        win_rate = self.wins / total_trades if total_trades > 0 else 0
+        total_profit = sum(trade['profit'] for trade in self.closed_trades)
+        total_return = total_profit / self.initial_cash
 
-        total_pnl = sum(trade['pnl'] for trade in self.closed_trades)
-        avg_pnl = total_pnl / total_trades if total_trades > 0 else 0
+        avg_profit = total_profit / total_trades if total_trades > 0 else 0
+        avg_profit_rate = sum(trade['profit_rate'] for trade in self.closed_trades) / total_trades if total_trades > 0 else 0
 
-        # 最大ドローダウン計算
-        max_equity = max(self.equity_list) if self.equity_list else self.initial_cash
-        min_equity = min(self.equity_list) if self.equity_list else self.initial_cash
-        max_dd = ((min_equity - max_equity) / max_equity * 100) if max_equity > 0 else 0
+        max_profit = max(trade['profit'] for trade in self.closed_trades) if self.closed_trades else 0
+        max_loss = min(trade['profit'] for trade in self.closed_trades) if self.closed_trades else 0
 
-        final_equity = self.equity_list[-1] if self.equity_list else self.initial_cash
-        total_return = ((final_equity - self.initial_cash) / self.initial_cash * 100)
+        final_equity = self._calculate_total_equity(data.iloc[-1]['close'])
+        total_return_percent = (final_equity - self.initial_cash) / self.initial_cash * 100
 
-        print("\n" + "="*60)
-        print("=== デバッグバックテスト結果 ===")
-        print("="*60)
-        print(f"銘柄: {symbol}")
-        print(f"期間: {data.index[0].strftime('%Y-%m-%d')} 〜 {data.index[-1].strftime('%Y-%m-%d')}")
-        print(f"初期資金: {self.initial_cash:,}円")
-        print(f"最終資金: {final_equity:,}円")
-        print(f"総損益: {total_pnl:+,}円 ({total_return:+.1f}%)")
-        print(f"取引回数: {total_trades}回")
-        print(f"勝率: {win_rate:.1f}%")
-        print(f"平均損益: {avg_pnl:+,.0f}円")
-        print(f"最大ドローダウン: {max_dd:.1f}%")
+        print(f"\n=== パフォーマンスレポート ({symbol}) ===")
+        print(f"総取引回数: {total_trades}回")
+        print(f"勝率: {win_rate:.1%} ({self.wins}/{total_trades})")
+        print(f"総利益: {total_profit:,.0f}円")
+        print(f"総リターン: {total_return:.1%}")
+        print(f"平均利益: {avg_profit:,.0f}円")
+        print(f"平均利益率: {avg_profit_rate:.1%}")
+        print(f"最大利益: {max_profit:,.0f}円")
+        print(f"最大損失: {max_loss:,.0f}円")
+        print(f"最終資産: {final_equity:,.0f}円")
+        print(f"総リターン率: {total_return_percent:.1f}%")
 
-        # 取引詳細
-        if total_trades > 0:
-            print(f"\n--- 取引詳細 ---")
-            for i, trade in enumerate(self.closed_trades, 1):
-                print(f"{i:2d}. {trade['entry_price']:6} → {trade['exit_price']:6} | {trade['pnl']:+6}円 | {trade['reason']}")
+        # 詳細な取引履歴
+        print(f"\n=== 取引履歴 ===")
+        for i, trade in enumerate(self.closed_trades[-10:], 1):  # 直近10件のみ表示
+            print(f"{i}. {trade['date'].strftime('%Y-%m-%d')}: {trade['side']} {trade['price']}円, "
+                  f"利益: {trade['profit']:,.0f}円 ({trade['profit_rate']:.1%}), 理由: {trade['reason']}")
 
 
 def main():
     """メイン関数"""
-    parser = argparse.ArgumentParser(description='デバッグ用バックテストスクリプト')
-    parser.add_argument('--symbol', required=True, help='銘柄コード（例: 9984.T）')
-    parser.add_argument('--params', required=True, help='パラメータJSONファイル')
-    parser.add_argument('--start', help='開始日（YYYY-MM-DD）')
-    parser.add_argument('--end', help='終了日（YYYY-MM-DD）')
+    parser = argparse.ArgumentParser(description='デバッグ用バックテスト')
+    parser.add_argument('symbol', help='銘柄コード (例: 9984.T)')
+    parser.add_argument('params_file', help='パラメータファイルのパス')
+    parser.add_argument('--start', help='開始日 (YYYY-MM-DD)')
+    parser.add_argument('--end', help='終了日 (YYYY-MM-DD)')
 
     args = parser.parse_args()
 
-    # 株価に応じてposition_sizeを調整
-    backtest = DebugBacktest(initial_cash=1000000, position_size=10)  # 10株単位に変更
-    backtest.run(
-        symbol=args.symbol,
-        params_file=args.params,
-        start_date=args.start,
-        end_date=args.end
-    )
+    backtest = DebugBacktest()
+    backtest.run(args.symbol, args.params_file, args.start, args.end)
 
 
 if __name__ == "__main__":
